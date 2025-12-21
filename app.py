@@ -7,6 +7,7 @@ import pathlib
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+from sklearn.metrics import confusion_matrix, roc_auc_score, roc_curve
 
 ROOT = pathlib.Path(__file__).resolve().parent
 OUT = ROOT / "outputs"
@@ -69,7 +70,7 @@ st.divider()
 # Country baselines
 st.subheader("Country Baseline Table")
 
-show_popular_only = st.checkbox("Show popular countries only", value=True)
+show_popular_only = st.checkbox("Major Countries Only", value=True, key="baseline_major_only")
 
 df_baseline = country_df.copy()
 if show_popular_only:
@@ -90,7 +91,7 @@ st.divider()
 st.subheader("Team Aggregate PIs")
 
 # Toggle to focus on major countries
-major_only = st.checkbox("Major Countries Only", value=True)
+major_only = st.checkbox("Major Countries Only", value=True, key="team_major_only")
 
 latest_team = team_df.sort_values("Date", ascending=False).groupby("Team").head(1)
 if major_only:
@@ -116,7 +117,7 @@ if preds_df.empty:
 else:
     preds_df = preds_df.sort_values("Date")
     opps_all = sorted(preds_df["Opponent"].dropna().unique())
-    filter_pop_opp = st.checkbox("Popular opponents only", value=True)
+    filter_pop_opp = st.checkbox("Major Countries Only", value=True, key="opponent_major_only")
     if filter_pop_opp:
         opps = [o for o in opps_all if o in POPULAR_COUNTRIES]
         if not opps:
@@ -129,13 +130,36 @@ else:
         st.info("No rows for this opponent.")
     else:
         latest = filtered.iloc[-1]
-        cols = st.columns(5)
-        cols[0].metric("Pred Bat PI", f"{latest['Pred_Bat_PI']:.1f}")
-        cols[1].metric("Pred Bowl PI", f"{latest['Pred_Bowl_PI']:.1f}")
-        cols[2].metric("Pred Field PI", f"{latest['Pred_Field_PI']:.1f}")
-        cols[3].metric("Opponent Avg PI", f"{latest['Opp_Total_PI']:.1f}")
+        
+        # Calculate Pakistan total PI
+        pak_total = latest['Pred_Bat_PI'] + latest['Pred_Bowl_PI'] + latest['Pred_Field_PI']
+        opp_total = latest['Opp_Total_PI']
+        env_weight = latest.get('Environmental_Weight', 0)
+        margin = pak_total - (opp_total + env_weight)
+        
+        # Confidence: normalized margin as percentage (scaled more conservatively)
+        # Using 250 PI points = 100% confidence to avoid extreme values
+        confidence_pct = max(-100, min(100, (margin / 250) * 100))
+        
+        # First row: 5 metrics
+        cols1 = st.columns(5)
+        cols1[0].metric("Pred Bat PI", f"{latest['Pred_Bat_PI']:.1f}")
+        cols1[1].metric("Pred Bowl PI", f"{latest['Pred_Bowl_PI']:.1f}")
+        cols1[2].metric("Pred Field PI", f"{latest['Pred_Field_PI']:.1f}")
+        cols1[3].metric("Pakistan Total PI", f"{pak_total:.1f}")
+        cols1[4].metric("Opponent Total PI", f"{opp_total:.1f}")
+        
+        # Second row: 3 metrics (aligned under middle 3 of first row)
+        cols2 = st.columns([1, 1, 1, 1, 1])
+        cols2[1].metric("Difference", f"{margin:.1f}", delta_color="normal")
         win_text = "Yes" if latest.get("Pred_Win", 0) == 1 else "No"
-        cols[4].metric("Predicted Win?", win_text)
+        cols2[2].metric("Predicted Win?", win_text)
+        cols2[3].metric("Confidence", f"{abs(confidence_pct):.0f}%")
+        
+        # Confidence descriptor
+        conf_desc = 'Strong' if abs(confidence_pct) > 50 else 'Moderate' if abs(confidence_pct) > 25 else 'Weak'
+        adv_desc = 'advantage' if confidence_pct > 0 else 'disadvantage'
+        st.markdown(f"**Prediction Assessment**: {conf_desc} {adv_desc}")
 
         st.markdown("**Match history vs selected opponent**")
         show_cols = [
