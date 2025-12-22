@@ -6,7 +6,7 @@ This project builds a **performance intelligence system** for Pakistan's men's T
 - **Layer 1** verifies that computed team performance metrics (PIs) correlate with actual wins (validation of the core metric).
 - **Layer 2** predicts Pakistan's expected performance against any opponent and compares it to the opponent's historical average to forecast win probability.
 
-The frontend dashboard presents this intelligence interactively, allowing stakeholders to explore team baselines, historical trends, and pre-match predictions.
+The frontend dashboard presents this intelligence interactively, allowing stakeholders to explore country baselines (with composite Total_PI metrics), historical trends, and pre-match predictions.
 ---
 
 ## 1. Project Motivation & Context
@@ -64,6 +64,9 @@ Match List → Filter (gender == "male") → 3,046 male T20 matches
 1. For each male match JSON, extract:
    - Teams, venue, city, toss winner/decision, match outcome.
    - Player rosters per team.
+   - **Data Quality Validation**: Skip matches with:
+     - `outcome.result == "no result"` (abandoned/cancelled matches)
+     - No deliveries in any innings (incomplete/corrupted data)
    
 2. Loop through all deliveries (ball-by-ball):
    - **Batter stats**: Runs, balls faced, fours (4-run hits), sixes (6-run hits).
@@ -376,26 +379,16 @@ Purpose: Show pre-match predictor accuracy; transparency on model uncertainty.
 
 #### C. Country Baseline Table
 ```
-Columns: Team | Matches | Wins | WL_Ratio | Avg_Bat_PI | Avg_Bowl_PI | Avg_Field_PI
+Columns: Team | Matches | Wins | WL_Ratio | Avg_Bat_PI | Avg_Bowl_PI | Avg_Field_PI | Total_PI
 Filter: "Major Countries Only" (default: ON) → shows India, Australia, England, Pakistan, South Africa, NZ, Sri Lanka, Bangladesh, West Indies, Afghanistan
 Purpose: 
   - See which teams are strong (high WL_Ratio).
   - Understand typical PI ranges (India avg 150 Bat_PI vs lower teams avg 100).
+  - Total_PI provides a single composite metric (sum of Bat+Bowl+Field) for quick team comparison.
   - Reference baseline for Pakistan's pre-match comparison.
 ```
 
-#### D. Team Aggregate PIs
-```
-Columns: Team | WL_Ratio | Team_Bat_PI | Team_Bowl_PI | Team_Field_PI | Team_Bat_Form | Team_Bowl_Form | Team_Field_Form
-Filter: "Major Countries Only" (default: ON)
-Shows: Latest snapshot (most recent match) per team
-Purpose: 
-  - See team's current form (Bat_Form, Bowl_Form vs historical).
-  - Compare teams' recent match outputs.
-  - Identify hot/cold teams.
-```
-
-#### E. Pakistan Pre-Match Predictions
+#### D. Pakistan Pre-Match Predictions
 ```
 Sections:
 1. Opponent Selector (filter "Major Countries Only" to focus on big matches)
