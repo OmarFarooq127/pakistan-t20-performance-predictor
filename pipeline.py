@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -211,6 +212,11 @@ def process_match(file_path: Path) -> Tuple[List[Dict], Dict]:
     info = data.get("info", {})
     if info.get("gender") != "male":
         return [], {}
+    
+    # Skip abandoned/no-result matches
+    outcome = info.get("outcome", {})
+    if outcome.get("result") == "no result":
+        return [], {}
 
     match_id = file_path.stem
     date = info.get("dates", [None])[0]
@@ -232,6 +238,16 @@ def process_match(file_path: Path) -> Tuple[List[Dict], Dict]:
 
     over_runs = defaultdict(int)
     innings = data.get("innings", [])
+    
+    # Skip matches with no ball-by-ball data
+    has_deliveries = any(
+        len(ov.get("deliveries", []))
+        for inn in innings
+        for ov in inn.get("overs", [])
+    )
+    if not has_deliveries:
+        return [], {}
+    
     chasing_team = innings[1].get("team") if len(innings) > 1 else None
 
     for inning in innings:
@@ -582,6 +598,11 @@ def layer2_pre_match(team_df: pd.DataFrame) -> pd.DataFrame:
         mae = mean_absolute_error(y_test, preds)
         mae_scores[out_col] = float(mae)
         print(f"{out_col} MAE: {mae:.2f}")
+
+        # Persist the fitted pipeline (preprocessor + RF) for on-the-fly inference in Streamlit
+        model_path = OUTPUT_DIR / f"layer2_{out_col.lower()}.pkl"
+        joblib.dump(model, model_path)
+
         results[out_col] = model.predict(pak_df[feature_cols])
 
     results["Pred_Total_PI"] = results[["Pred_Bat_PI", "Pred_Bowl_PI", "Pred_Field_PI"]].sum(axis=1)
