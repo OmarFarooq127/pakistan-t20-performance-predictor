@@ -252,7 +252,6 @@ def assemble_feature_row(
     player_lookup: pd.DataFrame,
     player_defaults: dict,
     country_df: pd.DataFrame,
-    team_latest: pd.DataFrame = None,
 ):
     bat_forms = []
     bowl_forms = []
@@ -293,60 +292,27 @@ def assemble_feature_row(
 
     opp_row = country_df[country_df["Team"] == opponent].head(1)
     if opp_row.empty:
-        opp_avg = {
-            "Opp_WL_Ratio": float(country_df["WL_Ratio"].mean()),
-            "Opp_Avg_Bat_PI": float(country_df["Avg_Bat_PI"].mean()),
-            "Opp_Avg_Bowl_PI": float(country_df["Avg_Bowl_PI"].mean()),
-            "Opp_Avg_Field_PI": float(country_df["Avg_Field_PI"].mean()),
+        opp_defaults = {
+            "Opp_WL_Ratio": country_df["WL_Ratio"].mean(),
+            "Opp_Avg_Bat_PI": country_df["Avg_Bat_PI"].mean(),
+            "Opp_Avg_Bowl_PI": country_df["Avg_Bowl_PI"].mean(),
+            "Opp_Avg_Field_PI": country_df["Avg_Field_PI"].mean(),
         }
     else:
-        opp_avg = {
+        opp_defaults = {
             "Opp_WL_Ratio": float(opp_row["WL_Ratio"].iloc[0]),
             "Opp_Avg_Bat_PI": float(opp_row["Avg_Bat_PI"].iloc[0]),
             "Opp_Avg_Bowl_PI": float(opp_row["Avg_Bowl_PI"].iloc[0]),
             "Opp_Avg_Field_PI": float(opp_row["Avg_Field_PI"].iloc[0]),
         }
 
-    # Opponent recent form (last-10), from latest team aggregates table
-    opp_form = {}
-    if isinstance(team_latest, pd.DataFrame) and not team_latest.empty and opponent in team_latest.index:
-        r = team_latest.loc[opponent]
-        opp_form = {
-            "Opp_Bat_Form": float(r.get("Team_Bat_Form", pd.NA)) if pd.notna(r.get("Team_Bat_Form", pd.NA)) else float(team_latest.get("Team_Bat_Form").mean()),
-            "Opp_Bowl_Form": float(r.get("Team_Bowl_Form", pd.NA)) if pd.notna(r.get("Team_Bowl_Form", pd.NA)) else float(team_latest.get("Team_Bowl_Form").mean()),
-            "Opp_Field_Form": float(r.get("Team_Field_Form", pd.NA)) if pd.notna(r.get("Team_Field_Form", pd.NA)) else float(team_latest.get("Team_Field_Form").mean()),
-        }
-    else:
-        # Fallback to overall mean of forms if opponent not present
-        if isinstance(team_latest, pd.DataFrame) and not team_latest.empty:
-            opp_form = {
-                "Opp_Bat_Form": float(team_latest.get("Team_Bat_Form").mean()),
-                "Opp_Bowl_Form": float(team_latest.get("Team_Bowl_Form").mean()),
-                "Opp_Field_Form": float(team_latest.get("Team_Field_Form").mean()),
-            }
-        else:
-            # last resort: use country averages as a weak proxy
-            opp_form = {
-                "Opp_Bat_Form": float(country_df["Avg_Bat_PI"].mean()),
-                "Opp_Bowl_Form": float(country_df["Avg_Bowl_PI"].mean()),
-                "Opp_Field_Form": float(country_df["Avg_Field_PI"].mean()),
-            }
-
-    feature_row.update(opp_avg)
-    feature_row.update(opp_form)
+    feature_row.update(opp_defaults)
     return pd.DataFrame([feature_row])
 
 player_df, team_df, country_df, preds_df = load_data()
 models = load_models()
 player_lookup, player_defaults = build_player_lookup(player_df)
 all_squad_options = sorted(player_lookup.index.tolist())
-
-# Latest team row per country (used for opponent recent form lookup)
-team_latest_lookup = (
-    team_df.sort_values("Date").groupby("Team").tail(1).set_index("Team")
-    if not team_df.empty and "Team" in team_df.columns
-    else pd.DataFrame()
-)
 
 # Filter DEFAULT_SQUAD to only include players that exist in the dataset
 default_squad_available = [p for p in DEFAULT_SQUAD if p in all_squad_options]
@@ -395,6 +361,7 @@ st.subheader("Country Baseline Table")
 show_popular_only = st.checkbox("Major Countries Only", value=True, key="baseline_major_only")
 
 df_baseline = country_df.copy()
+df_baseline["Total_PI"] = df_baseline["Avg_Bat_PI"] + df_baseline["Avg_Bowl_PI"] + df_baseline["Avg_Field_PI"]
 if show_popular_only:
     df_baseline = df_baseline[df_baseline["Team"].isin(POPULAR_COUNTRIES)]
     # Sort by Matches desc, then WL ratio desc
@@ -409,196 +376,126 @@ st.dataframe(df_baseline, height=300)
 
 st.divider()
 
-# Team aggregates summary
-st.subheader("Team Aggregate PIs")
-
-# Toggle to focus on major countries
-major_only = st.checkbox("Major Countries Only", value=True, key="team_major_only")
-
-latest_team = team_df.sort_values("Date", ascending=False).groupby("Team").head(1)
-if major_only:
-    latest_team = latest_team[latest_team["Team"].isin(POPULAR_COUNTRIES)]
-    latest_team = latest_team.sort_values(["Matches" if "Matches" in latest_team.columns else "Date", "Winner"], ascending=[False, False])
-else:
-    # Put major teams first, then sort by matches/date
-    latest_team["_popular_first"] = latest_team["Team"].apply(lambda x: 0 if x in POPULAR_COUNTRIES else 1)
-    latest_team = latest_team.sort_values(["_popular_first", "Matches" if "Matches" in latest_team.columns else "Date"], ascending=[True, False])
-    latest_team.drop(columns=["_popular_first"], inplace=True)
-
-st.dataframe(latest_team[[
-    "Team", "WL_Ratio" if "WL_Ratio" in latest_team.columns else "Winner", "Team_Bat_PI", "Team_Bowl_PI", "Team_Field_PI",
-    "Team_Bat_Form", "Team_Bowl_Form", "Team_Field_Form"
-]], height=300)
-
-st.divider()
-
 # Layer 2: Pakistan Pre-Match Predictions (now with on-the-fly predictor form)
 st.subheader("Layer 2: Pakistan Pre-Match Predictions")
 missing_models = [k for k, v in models.items() if v is None]
-
-# Get list of all venues from data
-venues_all = (
-    sorted(player_df["Venue"].dropna().unique().tolist()) if "Venue" in player_df.columns else []
-)
-
-# Get list of opponents
-opp_options_all = sorted(country_df["Team"].dropna().unique())
-
-with st.form("live_pred_form", border=True):
-    st.markdown("**Select Pakistan scenario for prediction:**")
-
-    # First row: major toggle + opponent + venue, evenly spaced
-    row1 = st.columns([1, 2, 2])
-    with row1[0]:
-        filter_pop_opp = st.checkbox("Major Countries Only", value=True, key="pred_major_only")
-    with row1[1]:
-        if filter_pop_opp:
-            opp_opts = ["-"] + [o for o in opp_options_all if o in POPULAR_COUNTRIES]
-            if len(opp_opts) == 1:
-                opp_opts = ["-"] + opp_options_all
-        else:
-            opp_opts = ["-"] + opp_options_all
-        opponent = st.selectbox("Opponent", options=opp_opts, index=0)
-    with row1[2]:
-        venue_options = ["-"] + venues_all if venues_all else ["-"]
-        venue = st.selectbox("Venue", options=venue_options, index=0)
-
-    # Second row: toss/chase aligned horizontally + method toggle
-    row2 = st.columns([1, 1, 3])
-    with row2[0]:
-        pak_won_toss = st.checkbox("Pakistan won the toss?", value=False)
-    with row2[1]:
-        pak_chasing = st.checkbox("Pakistan is chasing?", value=False)
-    with row2[2]:
-        method_choice = st.radio(
-            "Final prediction method",
-            options=["Model PIs (RF)", "Team Form"],
-            index=(0 if not missing_models else 1),
-            horizontal=True,
-            help="Choose between model-predicted PIs or direct team form sum",
-        )
-        opp_baseline_choice = st.radio(
-            "Opponent baseline",
-            options=["All-time Avg PIs", "Recent Form (last-10)"],
-            index=1,
-            horizontal=True,
-            help="Use opponent's all-time average PIs or last-10 match forms",
-        )
-
-    # Squad selector full width
-    squad = st.multiselect(
-        "Pakistan squad (forms taken from latest available matches)",
-        options=all_squad_options,
-        default=default_squad_available,
+if missing_models:
+    st.warning("Saved Layer 2 models not found. Re-run pipeline.py to generate layer2_pred_*.pkl artifacts.")
+else:
+    # Get list of all venues from data
+    venues_all = (
+        sorted(player_df["Venue"].dropna().unique().tolist()) if "Venue" in player_df.columns else []
     )
-    st.caption("Select exactly 11 players; opponent and venue are required.")
 
-    submitted = st.form_submit_button("Predict", type="primary")
+    # Get list of opponents
+    opp_options_all = sorted(country_df["Team"].dropna().unique())
 
-if submitted:
-    errors = []
-    if not opponent or opponent == "-":
-        errors.append("Pick an opponent.")
-    if not venue or venue == "-":
-        errors.append("Pick a venue.")
-    if not squad:
-        errors.append("Select squad players.")
-    if squad and len(squad) != 11:
-        errors.append("Squad must have exactly 11 players.")
-    if method_choice == "Model PIs (RF)" and missing_models:
-        errors.append("Saved Layer 2 models not found. Re-run pipeline.py to generate layer2_pred_*.pkl artifacts.")
+    with st.form("live_pred_form", border=True):
+        st.markdown("**Select Pakistan scenario for prediction:**")
 
-    if errors:
-        st.error(" ".join(errors))
-    else:
-        # Infer pitch and home advantage from venue
-        pitch = venue_to_pitch(venue)
-        home_adv = venue_to_home(venue)
+        # First row: major toggle + opponent + venue, evenly spaced
+        row1 = st.columns([1, 2, 2])
+        with row1[0]:
+            filter_pop_opp = st.checkbox("Major Countries Only", value=True, key="pred_major_only")
+        with row1[1]:
+            if filter_pop_opp:
+                opp_opts = ["-"] + [o for o in opp_options_all if o in POPULAR_COUNTRIES]
+                if len(opp_opts) == 1:
+                    opp_opts = ["-"] + opp_options_all
+            else:
+                opp_opts = ["-"] + opp_options_all
+            opponent = st.selectbox("Opponent", options=opp_opts, index=0)
+        with row1[2]:
+            venue_options = ["-"] + venues_all if venues_all else ["-"]
+            venue = st.selectbox("Venue", options=venue_options, index=0)
 
-        feat_df = assemble_feature_row(
-            squad=squad,
-            opponent=opponent,
-            chase=int(pak_chasing),
-            toss_win=int(pak_won_toss),
-            home_adv=home_adv,
-            pitch=pitch,
-            player_lookup=player_lookup,
-            player_defaults=player_defaults,
-            country_df=country_df,
-            team_latest=team_latest_lookup,
+        # Second row: toss/chase aligned horizontally
+        row2 = st.columns([1, 1, 3])
+        with row2[0]:
+            pak_won_toss = st.checkbox("Pakistan won the toss?", value=False)
+        with row2[1]:
+            pak_chasing = st.checkbox("Pakistan is chasing?", value=False)
+
+        # Squad selector full width
+        squad = st.multiselect(
+            "Pakistan squad (forms taken from latest available matches)",
+            options=all_squad_options,
+            default=default_squad_available,
         )
+        st.caption("Select exactly 11 players; opponent and venue are required.")
 
-        # Compute Pakistan total depending on method
-        used_method_label = ""
-        if method_choice == "Model PIs (RF)":
+        submitted = st.form_submit_button("Predict", type="primary")
+
+    if submitted:
+        errors = []
+        if not opponent or opponent == "-":
+            errors.append("Pick an opponent.")
+        if not venue or venue == "-":
+            errors.append("Pick a venue.")
+        if not squad:
+            errors.append("Select squad players.")
+        if squad and len(squad) != 11:
+            errors.append("Squad must have exactly 11 players.")
+
+        if errors:
+            st.error(" ".join(errors))
+        else:
+            # Infer pitch and home advantage from venue
+            pitch = venue_to_pitch(venue)
+            home_adv = venue_to_home(venue)
+
+            feat_df = assemble_feature_row(
+                squad=squad,
+                opponent=opponent,
+                chase=int(pak_chasing),
+                toss_win=int(pak_won_toss),
+                home_adv=home_adv,
+                pitch=pitch,
+                player_lookup=player_lookup,
+                player_defaults=player_defaults,
+                country_df=country_df,
+            )
+
             preds = {}
             for key, model in models.items():
                 preds[key] = float(model.predict(feat_df)[0])
 
             pak_total = preds["Pred_Bat_PI"] + preds["Pred_Bowl_PI"] + preds["Pred_Field_PI"]
-            used_method_label = "Using model-predicted PIs"
-        else:
-            # Team-form method: sum the team forms directly
-            team_bat = float(feat_df["Team_Bat_Form"].iloc[0])
-            team_bowl = float(feat_df["Team_Bowl_Form"].iloc[0])
-            team_field = float(feat_df["Team_Field_Form"].iloc[0])
-            pak_total = team_bat + team_bowl + team_field
-            used_method_label = "Using direct team form"
-
-        if opp_baseline_choice == "Recent Form (last-10)":
-            opp_total = float(
-                feat_df["Opp_Bat_Form"].iloc[0]
-                + feat_df["Opp_Bowl_Form"].iloc[0]
-                + feat_df["Opp_Field_Form"].iloc[0]
-            )
-            opp_label = "Opponent Total Form"
-        else:
             opp_total = float(
                 feat_df["Opp_Avg_Bat_PI"].iloc[0]
                 + feat_df["Opp_Avg_Bowl_PI"].iloc[0]
                 + feat_df["Opp_Avg_Field_PI"].iloc[0]
             )
-            opp_label = "Opponent Total PI"
-        env_weight = (
-            ENV_WEIGHTS["CHASE"] * feat_df["Chase"].iloc[0]
-            + ENV_WEIGHTS["NOT_TOSS_WIN"] * (1 - feat_df["Toss_Win"].iloc[0])
-            + ENV_WEIGHTS["HOME"] * feat_df["Home_Advantage"].iloc[0]
-        )
+            env_weight = (
+                ENV_WEIGHTS["CHASE"] * feat_df["Chase"].iloc[0]
+                + ENV_WEIGHTS["NOT_TOSS_WIN"] * (1 - feat_df["Toss_Win"].iloc[0])
+                + ENV_WEIGHTS["HOME"] * feat_df["Home_Advantage"].iloc[0]
+            )
 
-        margin = pak_total - (opp_total + env_weight)
-        pred_win = 1 if margin > 0 else 0
+            margin = pak_total - (opp_total + env_weight)
+            pred_win = 1 if margin > 0 else 0
 
-        confidence_pct = max(-100, min(100, (margin / 250) * 100))
-        conf_desc = (
-            "Strong" if abs(confidence_pct) > 50 else "Moderate" if abs(confidence_pct) > 25 else "Weak"
-        )
-        adv_desc = "advantage" if confidence_pct > 0 else "disadvantage"
+            confidence_pct = max(-100, min(100, (margin / 250) * 100))
+            conf_desc = (
+                "Strong" if abs(confidence_pct) > 50 else "Moderate" if abs(confidence_pct) > 25 else "Weak"
+            )
+            adv_desc = "advantage" if confidence_pct > 0 else "disadvantage"
 
-        # Display metrics depending on method
-        cols_live1 = st.columns(5)
-        if method_choice == "Model PIs (RF)":
+            cols_live1 = st.columns(5)
             cols_live1[0].metric("Pred Bat PI", f"{preds['Pred_Bat_PI']:.1f}")
             cols_live1[1].metric("Pred Bowl PI", f"{preds['Pred_Bowl_PI']:.1f}")
             cols_live1[2].metric("Pred Field PI", f"{preds['Pred_Field_PI']:.1f}")
             cols_live1[3].metric("Pakistan Total PI", f"{pak_total:.1f}")
-            cols_live1[4].metric(opp_label, f"{opp_total:.1f}")
-        else:
-            cols_live1[0].metric("Team Bat Form", f"{feat_df['Team_Bat_Form'].iloc[0]:.1f}")
-            cols_live1[1].metric("Team Bowl Form", f"{feat_df['Team_Bowl_Form'].iloc[0]:.1f}")
-            cols_live1[2].metric("Team Field Form", f"{feat_df['Team_Field_Form'].iloc[0]:.1f}")
-            cols_live1[3].metric("Pakistan Total Form", f"{pak_total:.1f}")
-            cols_live1[4].metric(opp_label, f"{opp_total:.1f}")
+            cols_live1[4].metric("Opponent Total PI", f"{opp_total:.1f}")
 
-        cols_live2 = st.columns(5)
-        cols_live2[0].metric("Method", used_method_label)
-        cols_live2[1].metric("Difference", f"{margin:.1f}", delta_color="normal")
-        cols_live2[2].metric("Predicted Win?", "Yes" if pred_win else "No")
-        cols_live2[3].metric("Confidence", f"{abs(confidence_pct):.0f}%")
-        cols_live2[4].metric("Opp Baseline", opp_baseline_choice)
+            cols_live2 = st.columns(5)
+            cols_live2[1].metric("Difference", f"{margin:.1f}", delta_color="normal")
+            cols_live2[2].metric("Predicted Win?", "Yes" if pred_win else "No")
+            cols_live2[3].metric("Confidence", f"{abs(confidence_pct):.0f}%")
 
-        st.markdown(f"**Prediction Assessment**: {conf_desc} {adv_desc}")
+            st.markdown(f"**Prediction Assessment**: {conf_desc} {adv_desc}")
 
-        with st.expander("Feature inputs used (one row)", expanded=False):
-            st.dataframe(feat_df)
+            with st.expander("Feature inputs used (one row)", expanded=False):
+                st.dataframe(feat_df)
 
 st.caption("Tip: Re-run pipeline.py to refresh outputs, then reload this page.")

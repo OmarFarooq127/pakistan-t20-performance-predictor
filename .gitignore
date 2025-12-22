@@ -25,7 +25,6 @@ run.log
 *.ipynb
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -38,3 +37,7 @@ Thumbs.db
 # Large data directories (optional - uncomment if you don't want to upload JSONs)
 # male_matches_json/
 # t20s_json/
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat
+node_modules

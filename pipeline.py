@@ -212,8 +212,7 @@ def process_match(file_path: Path) -> Tuple[List[Dict], Dict]:
     info = data.get("info", {})
     if info.get("gender") != "male":
         return [], {}
-    
-    # Skip abandoned/no-result matches
+
     outcome = info.get("outcome", {})
     if outcome.get("result") == "no result":
         return [], {}
@@ -226,7 +225,6 @@ def process_match(file_path: Path) -> Tuple[List[Dict], Dict]:
     toss = info.get("toss", {})
     toss_winner = toss.get("winner")
     toss_decision = toss.get("decision")
-    outcome = info.get("outcome", {})
     winner = outcome.get("winner")
     neutral = info.get("neutral_venue", 0)
 
@@ -238,16 +236,9 @@ def process_match(file_path: Path) -> Tuple[List[Dict], Dict]:
 
     over_runs = defaultdict(int)
     innings = data.get("innings", [])
-    
-    # Skip matches with no ball-by-ball data
-    has_deliveries = any(
-        len(ov.get("deliveries", []))
-        for inn in innings
-        for ov in inn.get("overs", [])
-    )
+    has_deliveries = any(len(ov.get("deliveries", [])) for inn in innings for ov in inn.get("overs", []))
     if not has_deliveries:
         return [], {}
-    
     chasing_team = innings[1].get("team") if len(innings) > 1 else None
 
     for inning in innings:
